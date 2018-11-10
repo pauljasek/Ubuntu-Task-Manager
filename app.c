@@ -51,6 +51,7 @@ gboolean update_utilization(GtkWidget *label)
     long long total_time = get_total_cpu_jiffies();
     long long time = get_process_cpu_jiffies(1945);
 
+
     double cpu_utilization = 100.0 * (previous_time - time)/(previous_total_time - total_time);
     previous_total_time = total_time;
     previous_time = time;
@@ -68,7 +69,7 @@ activate (GtkApplication *app,
           gpointer        user_data)
 {
   GtkWidget *window;
-  GtkWidget *table, *labels[2][3];
+  GtkWidget *table, *labels[3][3], *check_buttons[3];
 
   window = gtk_application_window_new (app);
   gtk_window_set_title (GTK_WINDOW (window), "Task Manager");
@@ -85,12 +86,20 @@ activate (GtkApplication *app,
   labels[1][0] = gtk_label_new ("Test");
   labels[1][1] = gtk_label_new ("0%");
   labels[1][2] = gtk_label_new ("0%");
+  labels[2][0] = gtk_label_new ("MyProcess");
+  labels[2][1] = gtk_label_new ("25%");
+  labels[2][2] = gtk_label_new ("5%");
 
-  for (int row = 0; row < 2; row++)
+  for (int row = 0; row < 3; row++)
   {
+    if (row != 0)
+    {
+      check_buttons[row] = gtk_check_button_new();
+      gtk_grid_attach (GTK_GRID (table), check_buttons[row], 0, row, 1, 1);
+    }
     for (int column = 0; column < 3; column++)
     {
-      gtk_grid_attach (GTK_GRID (table), labels[row][column], column, row, 1, 1);
+      gtk_grid_attach (GTK_GRID (table), labels[row][column], column + 1, row, 1, 1);
     }
   }
 
