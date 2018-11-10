@@ -49,7 +49,7 @@ int previous_time = 0;
 gboolean update_utilization(GtkWidget *label)
 {
     long long total_time = get_total_cpu_jiffies();
-    long long time = get_process_cpu_jiffies(1371);
+    long long time = get_process_cpu_jiffies(1945);
 
     double cpu_utilization = 100.0 * (previous_time - time)/(previous_total_time - total_time);
     previous_total_time = total_time;
@@ -57,7 +57,6 @@ gboolean update_utilization(GtkWidget *label)
 
     char text_string[40];
     sprintf(text_string, "%.1lf%%", cpu_utilization);
-    printf("%s\n", text_string);
 
     gtk_label_set_text((GtkLabel *)label, text_string);
 
@@ -84,8 +83,8 @@ activate (GtkApplication *app,
   labels[0][1] = gtk_frame_new ("CPU Usage");
   labels[0][2] = gtk_frame_new ("Memory Usage");
   labels[1][0] = gtk_label_new ("Test");
-  labels[1][1] = gtk_label_new ("20%");
-  labels[1][2] = gtk_label_new ("3%");
+  labels[1][1] = gtk_label_new ("0%");
+  labels[1][2] = gtk_label_new ("0%");
 
   for (int row = 0; row < 2; row++)
   {
