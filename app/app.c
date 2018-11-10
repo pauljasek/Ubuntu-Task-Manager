@@ -1,6 +1,19 @@
 #include <gtk/gtk.h>
+
+#include <sys/syscall.h>
+
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/unistd.h>
+#include <linux/sched.h>
+
 #include <unistd.h>
 #include <stdio.h>
+
+#define HIJACKED_SYSCALL __NR_tuxcall
+
+int pid_list[5];
+char process_name_list[5][100];
 
 double get_total_cpu_jiffies()
 {
@@ -49,7 +62,7 @@ int previous_time = 0;
 gboolean update_utilization(GtkWidget *label)
 {
     long long total_time = get_total_cpu_jiffies();
-    long long time = get_process_cpu_jiffies(1945);
+    long long time = get_process_cpu_jiffies(pid_list[0]);
 
 
     double cpu_utilization = 100.0 * (previous_time - time)/(previous_total_time - total_time);
@@ -87,8 +100,8 @@ activate (GtkApplication *app,
   labels[1][1] = gtk_label_new ("0%");
   labels[1][2] = gtk_label_new ("0%");
   labels[2][0] = gtk_label_new ("MyProcess");
-  labels[2][1] = gtk_label_new ("25%");
-  labels[2][2] = gtk_label_new ("5%");
+  labels[2][1] = gtk_label_new ("0%");
+  labels[2][2] = gtk_label_new ("0%");
 
   for (int row = 0; row < 3; row++)
   {
@@ -115,7 +128,16 @@ main (int    argc,
   GtkApplication *app;
   int status;
 
-  
+  printf("first\n");
+
+  syscall(HIJACKED_SYSCALL, pid_list, process_name_list);
+
+  printf("second\n");
+
+  for (int i = 0; i < 5; i++) {
+    printf("%s: %d\n", process_name_list[i], pid_list[i]);
+  }
+
   app = gtk_application_new ("student.pauljasek.taskmanager", G_APPLICATION_FLAGS_NONE);
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
   status = g_application_run (G_APPLICATION (app), argc, argv);
