@@ -1,10 +1,67 @@
 #include <gtk/gtk.h>
+#include <unistd.h>
+#include <stdio.h>
 
-static void
-print_hello (GtkWidget *widget,
-             gpointer   data)
+double get_total_cpu_jiffies()
 {
-  g_print ("Hello World\n");
+  char dummy[10];
+  long long total_time = 0, temp;
+  FILE *fp = fopen("/proc/stat", "r");
+  fscanf(fp, "%s", dummy);
+  for (int i = 0; i < 10; i++) {
+    fscanf(fp, "%lld", &temp);
+    total_time += temp;
+  }
+  fclose(fp);
+
+  return total_time;
+}
+
+long long get_process_cpu_jiffies(int pid) {
+  char filename[100];
+  char items[52][100];
+  long long utime, stime, cutime, cstime, starttime, total_time;
+
+  sprintf(filename, "/proc/%d/stat", pid);
+
+  FILE *fp = fopen(filename, "r");
+
+
+  
+  for (int i = 0; i < 52; i++)
+  {
+    fscanf(fp, "%s", items[i]);
+  }
+
+  fclose(fp);
+
+  utime = strtoll(items[13],NULL,10);
+  stime = strtoll(items[14],NULL,10);
+  cutime = strtoll(items[15],NULL,10);
+  cstime = strtoll(items[16],NULL,10);
+
+  return utime + cutime + stime + cstime;
+}
+
+int previous_total_time = 0;
+int previous_time = 0;
+
+gboolean update_utilization(GtkWidget *label)
+{
+    long long total_time = get_total_cpu_jiffies();
+    long long time = get_process_cpu_jiffies(1082);
+
+    double cpu_utilization = 100.0 * (previous_time - time)/(previous_total_time - total_time);
+    previous_total_time = total_time;
+    previous_time = time;
+
+    char text_string[40];
+    sprintf(text_string, "%.1lf%%", cpu_utilization);
+    printf("%s\n", text_string);
+
+    gtk_label_set_text((GtkLabel *)label, text_string);
+
+    return TRUE;
 }
 
 static void
@@ -12,8 +69,6 @@ activate (GtkApplication *app,
           gpointer        user_data)
 {
   GtkWidget *window;
-  GtkWidget *button;
-  GtkWidget *button_box;
   GtkWidget *table, *labels[3][3], *check_buttons[3];
 
   window = gtk_application_window_new (app);
@@ -50,6 +105,8 @@ activate (GtkApplication *app,
   }
 
   gtk_widget_show_all (window);
+
+  g_timeout_add(1000, (GSourceFunc) update_utilization, labels[1][1]);
 }
 
 int
@@ -59,6 +116,7 @@ main (int    argc,
   GtkApplication *app;
   int status;
 
+  
   app = gtk_application_new ("student.pauljasek.taskmanager", G_APPLICATION_FLAGS_NONE);
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
   status = g_application_run (G_APPLICATION (app), argc, argv);
