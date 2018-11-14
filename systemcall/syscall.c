@@ -36,12 +36,13 @@ static void lkm_syscall(int * pid_list, char ** process_name_list)
         struct task_struct *task;
 	int i = 0;
 	for_each_process(task) {
-		if (i < 5) {
+		if (i < 244) {
 			pid_list[i] = task->pid;
 			printk("%ld\n", copy_to_user(process_name_list[i], task->comm, 100));
 		}
 		i++;
 	}
+        printk("%d\n", i);
 }
 
 static int is_syscall_table(ulong *p)
