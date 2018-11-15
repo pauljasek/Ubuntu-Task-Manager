@@ -31,18 +31,18 @@ static ulong *syscall_table = NULL;
 static void *original_syscall = NULL;
 
 
-static void lkm_syscall(int * pid_list, char ** process_name_list)
+static int lkm_syscall(int * pid_list, char ** process_name_list)
 {
         struct task_struct *task;
 	int i = 0;
 	for_each_process(task) {
-		if (i < 244) {
+		if (i < 1000) {
 			pid_list[i] = task->pid;
-			printk("%ld\n", copy_to_user(process_name_list[i], task->comm, 100));
 		}
 		i++;
 	}
         printk("%d\n", i);
+	return i;
 }
 
 static int is_syscall_table(ulong *p)

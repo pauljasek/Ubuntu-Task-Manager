@@ -12,7 +12,7 @@
 
 #define HIJACKED_SYSCALL __NR_tuxcall
 
-#define MAX_PROCESSES 244
+#define MAX_PROCESSES 1000
 
 struct process {
   pid_t pid;
@@ -71,14 +71,26 @@ long long get_process_cpu_jiffies(int pid) {
   return utime + cutime + stime + cstime;
 }
 
+void get_process_name(int pid, char *name) {
+  char filename[100];
+  sprintf(filename, "/proc/%d/cmdline", pid);
+  FILE *fp = fopen(filename, "r");
+  fscanf(fp, "%s", name);
+  fclose(fp);
+}
+
 long long previous_total_time = 0;
 long long previous_time[MAX_PROCESSES];
 GtkWidget *labels[MAX_PROCESSES + 1][3];
 
 gboolean update_utilization(GtkWidget * data)
 {
+  int length = syscall(HIJACKED_SYSCALL, pid_list, process_name_list);
+
+  printf("%d\n", length);
+
   long long total_time = get_total_cpu_jiffies();
-  for (int i = 0; i < MAX_PROCESSES; i++)
+  for (int i = 0; i < length; i++)
   {
     long long time = get_process_cpu_jiffies(pid_list[i]);
     
@@ -97,14 +109,15 @@ gboolean update_utilization(GtkWidget * data)
     processes[i].cpu_usage = cpu_utilization;
   }
 
-  qsort (processes, sizeof(processes)/sizeof(*processes), sizeof(*processes), comp_processes);
+  qsort (processes, length, sizeof(*processes), comp_processes);
 
-  for (int i = 0; i < MAX_PROCESSES; i++)
+  for (int i = 0; i < length; i++)
   {
-    char text_string[40];
+    char text_string[1000];
     sprintf(text_string, "%.4lf%%", processes[i].cpu_usage);
     gtk_label_set_text((GtkLabel *) labels[i + 1][1], text_string);
     sprintf(text_string, "Pid: %d", processes[i].pid);
+    get_process_name(processes[i].pid, text_string);
     gtk_label_set_text((GtkLabel *) labels[i + 1][0], text_string);
   }
 
@@ -139,9 +152,9 @@ activate (GtkApplication *app,
 
   for (int i = 0; i < MAX_PROCESSES; i++)
   {
-    labels[i + 1][0] = gtk_label_new ("Process Name");
-    labels[i + 1][1] = gtk_label_new ("0%");
-    labels[i + 1][2] = gtk_label_new ("0%");
+    labels[i + 1][0] = gtk_label_new ("");
+    labels[i + 1][1] = gtk_label_new ("");
+    labels[i + 1][2] = gtk_label_new ("");
   }
 
 
@@ -160,7 +173,7 @@ activate (GtkApplication *app,
 
   gtk_widget_show_all (window);
 
-  g_timeout_add(1000, (GSourceFunc) update_utilization, NULL);
+  g_timeout_add(500, (GSourceFunc) update_utilization, NULL);
 }
 
 int
@@ -169,16 +182,6 @@ main (int    argc,
 {
   GtkApplication *app;
   int status;
-
-  printf("first\n");
-
-  syscall(HIJACKED_SYSCALL, pid_list, process_name_list);
-
-  printf("second\n");
-
-  for (int i = 0; i < 5; i++) {
-    printf("%s: %d\n", process_name_list[i], pid_list[i]);
-  }
 
   app = gtk_application_new ("student.pauljasek.taskmanager", G_APPLICATION_FLAGS_NONE);
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
