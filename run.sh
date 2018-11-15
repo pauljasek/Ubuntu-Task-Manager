@@ -15,8 +15,8 @@ echo ""
 echo "┌──────────────────────────────┐"
 echo "│           Test               │"
 echo "└──────────────────────────────┘"
-echo "$ ./app $1"
-./app/app
+echo "$ ./task-manager $1"
+./app/task-manager
 echo ""
 echo "┌──────────────────────────────┐"
 echo "│ Unload Kernel Module syscall │"

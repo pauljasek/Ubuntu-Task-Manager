@@ -9,6 +9,7 @@
 
 #include <unistd.h>
 #include <stdio.h>
+#include <libgen.h>
 
 #define HIJACKED_SYSCALL __NR_tuxcall
 
@@ -46,19 +47,21 @@ double get_total_cpu_jiffies()
 }
 
 long long get_process_cpu_jiffies(int pid) {
-  char filename[100];
+  char filename[200];
   char items[52][100];
   long long utime, stime, cutime, cstime, starttime, total_time;
 
   sprintf(filename, "/proc/%d/stat", pid);
 
   FILE *fp = fopen(filename, "r");
-
-
+  if (!fp) return 1;
   
   for (int i = 0; i < 52; i++)
   {
-    fscanf(fp, "%s", items[i]);
+    if (fscanf(fp, "%s", items[i]) == EOF) {
+      fclose(fp);
+      return 0;
+    };
   }
 
   fclose(fp);
@@ -71,11 +74,45 @@ long long get_process_cpu_jiffies(int pid) {
   return utime + cutime + stime + cstime;
 }
 
+int get_process_memory_usage(int pid, char * memory_usage) {
+  char filename[200];
+  sprintf(filename, "/proc/%d/status", pid);
+  FILE *fp = fopen(filename, "r");
+  if (!fp) return 1;
+  char *line;
+  size_t len = 1024;
+
+  line = malloc(len);
+
+	
+  while (1)
+  {
+	if (getline(&line, &len, fp) == -1)
+	{
+		free(line);
+		fclose(fp);
+		return 1;
+	}
+	if (!strncmp(line, "VmSize:", 7))
+	{
+		strcpy(memory_usage, strdup(&line[8]));
+		strtok(memory_usage, "\n");
+		break;
+	}
+  }
+
+  free(line);
+  fclose(fp);
+}
+
 void get_process_name(int pid, char *name) {
-  char filename[100];
+  char filename[100], path[1000] = {'\0'};
   sprintf(filename, "/proc/%d/cmdline", pid);
   FILE *fp = fopen(filename, "r");
-  fscanf(fp, "%s", name);
+  fscanf(fp, "%s", path);
+  if (strlen(path) > 0) {
+    strcpy(name, basename(path));
+  }
   fclose(fp);
 }
 
@@ -111,14 +148,27 @@ gboolean update_utilization(GtkWidget * data)
 
   qsort (processes, length, sizeof(*processes), comp_processes);
 
-  for (int i = 0; i < length; i++)
+  for (int i = 0, row = 0; i < length; i++, row++)
   {
-    char text_string[1000];
-    sprintf(text_string, "%.4lf%%", processes[i].cpu_usage);
-    gtk_label_set_text((GtkLabel *) labels[i + 1][1], text_string);
-    sprintf(text_string, "Pid: %d", processes[i].pid);
-    get_process_name(processes[i].pid, text_string);
-    gtk_label_set_text((GtkLabel *) labels[i + 1][0], text_string);
+    char text_string[1000], name_string[1000] = {'\0'}, *converted_string;
+    get_process_name(processes[i].pid, name_string);
+    converted_string = g_locale_to_utf8(name_string, strlen(name_string), NULL, NULL, NULL);
+    if (converted_string == NULL) {
+      printf("%s\n", name_string);
+      sprintf(text_string, "Pid: %d", processes[i].pid);
+      converted_string = text_string;
+    }
+
+    if (strlen(converted_string) == 0) {
+      row--;
+    } else {
+      gtk_label_set_text((GtkLabel *) labels[row + 1][0], converted_string);
+      sprintf(text_string, "%.4lf%%", processes[i].cpu_usage);
+      gtk_label_set_text((GtkLabel *) labels[row + 1][1], text_string);
+      char mem_usage_string[1000] = {'\0'};
+      get_process_memory_usage(processes[i].pid, mem_usage_string);
+      gtk_label_set_text((GtkLabel *) labels[row + 1][2], mem_usage_string);
+    }
   }
 
   previous_total_time = total_time;
@@ -131,6 +181,7 @@ activate (GtkApplication *app,
           gpointer        user_data)
 {
   GtkWidget *window, *scwin;
+  GtkWidget *kill_button;
   GtkWidget *table, *check_buttons[MAX_PROCESSES + 1];
 
   window = gtk_application_window_new (app);
@@ -146,9 +197,13 @@ activate (GtkApplication *app,
   gtk_grid_set_column_spacing (GTK_GRID (table), 10);
   gtk_container_add (GTK_CONTAINER (scwin), table);
 
-  labels[0][0] = gtk_frame_new ("Process Name");
-  labels[0][1] = gtk_frame_new ("CPU Usage");
-  labels[0][2] = gtk_frame_new ("Memory Usage");
+  labels[0][0] = gtk_frame_new (" Process Name ");
+  labels[0][1] = gtk_frame_new (" CPU Usage ");
+  labels[0][2] = gtk_frame_new (" Memory Usage ");
+
+  gtk_frame_set_label_align ((GtkFrame *) labels[0][0], 0.5, 0.0);
+  gtk_frame_set_label_align ((GtkFrame *) labels[0][1], 0.5, 0.0);
+  gtk_frame_set_label_align ((GtkFrame *) labels[0][2], 0.5, 0.0);
 
   for (int i = 0; i < MAX_PROCESSES; i++)
   {
@@ -156,6 +211,9 @@ activate (GtkApplication *app,
     labels[i + 1][1] = gtk_label_new ("");
     labels[i + 1][2] = gtk_label_new ("");
   }
+
+  kill_button = gtk_button_new_with_label("Kill");
+  gtk_grid_attach (GTK_GRID (table), kill_button, 0, 0, 1, 1);
 
 
   for (int row = 0; row < MAX_PROCESSES + 1; row++)
