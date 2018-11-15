@@ -36,9 +36,17 @@ double get_total_cpu_jiffies()
   char dummy[10];
   long long total_time = 0, temp;
   FILE *fp = fopen("/proc/stat", "r");
-  fscanf(fp, "%s", dummy);
+  if (!fp) return 3000000;
+
+  if (fscanf(fp, "%s", dummy) == EOF) {
+      fclose(fp);
+      return 3000000;
+  }
   for (int i = 0; i < 10; i++) {
-    fscanf(fp, "%lld", &temp);
+    if (fscanf(fp, "%lld", &temp) == EOF) {
+      fclose(fp);
+      return 3000000;
+    }
     total_time += temp;
   }
   fclose(fp);
@@ -105,15 +113,20 @@ int get_process_memory_usage(int pid, char * memory_usage) {
   fclose(fp);
 }
 
-void get_process_name(int pid, char *name) {
+int get_process_name(int pid, char *name) {
   char filename[100], path[1000] = {'\0'};
   sprintf(filename, "/proc/%d/cmdline", pid);
   FILE *fp = fopen(filename, "r");
-  fscanf(fp, "%s", path);
+  if (!fp) return 1;
+  if (fscanf(fp, "%s", path) == EOF) {
+    fclose(fp);
+    return 1;
+  }
   if (strlen(path) > 0) {
     strcpy(name, basename(path));
   }
   fclose(fp);
+  return 0;
 }
 
 long long previous_total_time = 0;
