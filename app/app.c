@@ -1,4 +1,5 @@
 #include <gtk/gtk.h>
+#include <gmodule.h>
 
 #include <sys/syscall.h>
 
@@ -17,19 +18,16 @@
 
 struct process {
   pid_t pid;
+  long long previous_time;
   double cpu_usage;
-} processes[MAX_PROCESSES];
-
-int comp_processes (const void * elem1, const void * elem2) 
-{
-    const struct process *p1 = elem1, *p2 = elem2;
-    if (p1->cpu_usage > p2->cpu_usage) return  -1;
-    if (p1->cpu_usage < p2->cpu_usage) return 1;
-    return 0;
-}
+  double cum_cpu_usage;
+  char memory_usage[1000];
+  char name[1000];
+  GtkTreeIter iter;
+};
 
 int pid_list[MAX_PROCESSES];
-char process_name_list[MAX_PROCESSES][100];
+GNode *process_tree;
 
 double get_total_cpu_jiffies()
 {
@@ -131,62 +129,222 @@ int get_process_name(int pid, char *name) {
 
 long long previous_total_time = 0;
 long long previous_time[MAX_PROCESSES];
-GtkWidget *labels[MAX_PROCESSES + 1][3];
+GtkTreeStore *store;
 
-gboolean update_utilization(GtkWidget * data)
+enum
 {
-  int length = syscall(HIJACKED_SYSCALL, pid_list, process_name_list);
+   PID_COLUMN,
+   PROCESS_NAME_COLUMN,
+   CPU_USAGE_COLUMN,
+   MEMORY_USAGE_COLUMN,
+   N_COLUMNS
+};
 
-  printf("%d\n", length);
+GNode * build_process_tree(pid_t parent_pid, GtkTreeIter *parent_iter) {
+  struct process *process_data;
+  
+  process_data = calloc(1, sizeof(struct process));
+  process_data->pid = parent_pid;
+  gtk_tree_store_append (store, &(process_data->iter), parent_iter);  /* Acquire an iterator */
+  gtk_tree_store_set (store, &(process_data->iter),
+		      PID_COLUMN, process_data->pid,
+                      PROCESS_NAME_COLUMN, process_data->name,
+                      CPU_USAGE_COLUMN, process_data->cum_cpu_usage * 100,
+                      MEMORY_USAGE_COLUMN, process_data->memory_usage,
+                      -1);
 
-  long long total_time = get_total_cpu_jiffies();
-  for (int i = 0; i < length; i++)
+  GNode *parent = g_node_new (process_data);
+
+  int length = syscall(HIJACKED_SYSCALL, pid_list, parent_pid);
+  for (int i = length - 1; i >= 0; i--)
   {
-    long long time = get_process_cpu_jiffies(pid_list[i]);
-    
-    double cpu_utilization = 100.0 * (time - previous_time[i])/(total_time - previous_total_time);
+    g_node_insert (parent, 0, build_process_tree(pid_list[i], &(process_data->iter)));
+  }
 
-    if (previous_time[i] == 0)
+  return parent;
+}
+
+void update_process_tree(GNode *tree) {
+  struct process *tree_data = (struct process *) tree->data;
+
+  int length = syscall(HIJACKED_SYSCALL, pid_list, ((struct process *) tree->data)->pid);
+  int children = g_node_n_children (tree);
+  
+  for (int c = children - 1, i = length - 1; c >= 0 || i >= 0;)
+  {
+    //printf("%d/%d children %d/%d new\n", c, children, i, length);
+    if (c < 0) {
+      //create
+      g_node_insert (tree, c + 1, build_process_tree(pid_list[i], &(tree_data->iter)));
+      i--;
+      continue;
+    }
+    GNode *child = g_node_nth_child (tree, c);
+    struct process *child_data = (struct process *) child->data;
+    pid_t child_pid = child_data->pid;
+    if (child_pid > pid_list[i] || i < 0) {
+      //remove
+      update_process_tree(child);
+      gtk_tree_store_remove (store, &(child_data->iter));
+      g_node_destroy(child);
+      c--;
+    } else if (child_pid == pid_list[i]) {
+      //update
+      update_process_tree(child);
+      c--;
+      i--;      
+    } else {
+      //create
+      g_node_insert (tree, c + 1, build_process_tree(pid_list[i], &(tree_data->iter)));
+      i--;
+    }
+  }
+}
+
+gboolean update_cpu_utilization(GNode *node, gpointer total_time_ptr) {
+    struct process *data;
+    data = (struct process *) node->data;
+
+    long long total_time = * (long long *) total_time_ptr;
+    long long time = get_process_cpu_jiffies(data->pid);
+    
+    double cpu_utilization = 1.0 * (time - data->previous_time)/(total_time - previous_total_time);
+
+    if (data->previous_time == 0)
     {
       cpu_utilization = 0;
     }
 
-    previous_time[i] = time;
+    data->previous_time = time;
 
     if (cpu_utilization == 0) cpu_utilization = 0;
     
-    processes[i].pid = pid_list[i];
-    processes[i].cpu_usage = cpu_utilization;
-  }
+    data->cpu_usage = cpu_utilization;
 
-  qsort (processes, length, sizeof(*processes), comp_processes);
+    return 0;
+}
 
-  for (int i = 0, row = 0; i < length; i++, row++)
-  {
-    char text_string[1000], name_string[1000] = {'\0'}, *converted_string;
-    get_process_name(processes[i].pid, name_string);
-    converted_string = g_locale_to_utf8(name_string, strlen(name_string), NULL, NULL, NULL);
-    if (converted_string == NULL) {
-      printf("%s\n", name_string);
-      sprintf(text_string, "Pid: %d", processes[i].pid);
-      converted_string = text_string;
-    }
+gboolean calculate_cum_cpu_utilization(GNode *node, gpointer sum) {
+    struct process *data;
+    data = (struct process *) node->data;
 
-    if (strlen(converted_string) == 0) {
-      row--;
-    } else {
-      gtk_label_set_text((GtkLabel *) labels[row + 1][0], converted_string);
-      sprintf(text_string, "%.4lf%%", processes[i].cpu_usage);
-      gtk_label_set_text((GtkLabel *) labels[row + 1][1], text_string);
-      char mem_usage_string[1000] = {'\0'};
-      get_process_memory_usage(processes[i].pid, mem_usage_string);
-      gtk_label_set_text((GtkLabel *) labels[row + 1][2], mem_usage_string);
-    }
-  }
+    double *val = (double *) sum;
+    *val += data->cpu_usage;
+
+    return 0;
+}
+
+gboolean update_cum_cpu_utilization(GNode *node, gpointer info) {
+    struct process *data;
+    data = (struct process *) node->data;
+
+    data->cum_cpu_usage = 0;
+
+    g_node_traverse (node,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 calculate_cum_cpu_utilization,
+                 &data->cum_cpu_usage);
+    
+    return 0;
+}
+
+gboolean update_memory_utilization(GNode *node, gpointer info) {
+  struct process *data;
+  data = (struct process *) node->data;
+  get_process_memory_usage(data->pid, data->memory_usage);
+
+  return 0;
+}
+
+gboolean update_process_name(GNode *node, gpointer info) {
+  struct process *data;
+  data = (struct process *) node->data;
+  get_process_name(data->pid, data->name);
+
+  return 0;
+}
+
+gboolean update_gtk_tree(GNode *node, gpointer info) {
+  struct process *data;
+  data = (struct process *) node->data;
+
+
+  gtk_tree_store_set (store, &data->iter,
+		      PID_COLUMN, data->pid,
+                      PROCESS_NAME_COLUMN, data->name,
+                      CPU_USAGE_COLUMN, data->cum_cpu_usage * 100,
+                      MEMORY_USAGE_COLUMN, data->memory_usage,
+                      -1);
+
+  return 0;
+}
+
+
+gboolean update_utilization(GtkWidget * data)
+{
+  update_process_tree(process_tree);
+
+  long long total_time = get_total_cpu_jiffies();
+
+  g_node_traverse (process_tree,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 update_cpu_utilization,
+                 &total_time);
 
   previous_total_time = total_time;
 
+  g_node_traverse (process_tree,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 update_cum_cpu_utilization,
+                 NULL);
+
+
+  g_node_traverse (process_tree,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 update_memory_utilization,
+                 NULL);
+
+
+  g_node_traverse (process_tree,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 update_process_name,
+                 NULL);
+
+
+  g_node_traverse (process_tree,
+                 G_IN_ORDER,
+                 G_TRAVERSE_ALL,
+                 -1,
+                 update_gtk_tree,
+                 NULL);
+
+
   return TRUE;
+}
+
+pid_t selected_pid = 0;
+
+/* Selection handler callback */
+static void
+tree_selection_changed_cb (GtkTreeSelection *selection, gpointer data)
+{
+        GtkTreeIter iter;
+        GtkTreeModel *model;
+
+        if (gtk_tree_selection_get_selected (selection, &model, &iter))
+        {
+                gtk_tree_model_get (model, &iter, PID_COLUMN, &selected_pid, -1);
+        }
 }
 
 static void
@@ -195,7 +353,17 @@ activate (GtkApplication *app,
 {
   GtkWidget *window, *scwin;
   GtkWidget *kill_button;
-  GtkWidget *table, *check_buttons[MAX_PROCESSES + 1];
+
+  store = gtk_tree_store_new (N_COLUMNS,
+					    G_TYPE_INT,
+                                            G_TYPE_STRING,
+                                            G_TYPE_DOUBLE,
+                                            G_TYPE_STRING);
+
+  GtkTreeSortable *sortable = GTK_TREE_SORTABLE(store);
+  //gtk_tree_sortable_set_sort_column_id (sortable, PROCESS_NAME_COLUMN, GTK_SORT_ASCENDING);
+  gtk_tree_sortable_set_sort_column_id (sortable, CPU_USAGE_COLUMN, GTK_SORT_DESCENDING);
+  //gtk_tree_sortable_set_sort_column_id (sortable, MEMORY_USAGE_COLUMN, GTK_SORT_ASCENDING);
 
   window = gtk_application_window_new (app);
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(window), GTK_POLICY_AUTOMATIC,
@@ -204,47 +372,68 @@ activate (GtkApplication *app,
   gtk_window_set_default_size (GTK_WINDOW (window), 600, 800);
 
   scwin = gtk_scrolled_window_new(NULL, NULL);
-  gtk_container_add (GTK_CONTAINER (window), scwin);
 
-  table = gtk_grid_new ();
-  gtk_grid_set_column_spacing (GTK_GRID (table), 10);
-  gtk_container_add (GTK_CONTAINER (scwin), table);
+  GtkWidget *tree;
+  tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
 
-  labels[0][0] = gtk_frame_new (" Process Name ");
-  labels[0][1] = gtk_frame_new (" CPU Usage ");
-  labels[0][2] = gtk_frame_new (" Memory Usage ");
+  GtkCellRenderer *renderer, *progress_renderer;
+  GtkTreeViewColumn *column;
 
-  gtk_frame_set_label_align ((GtkFrame *) labels[0][0], 0.5, 0.0);
-  gtk_frame_set_label_align ((GtkFrame *) labels[0][1], 0.5, 0.0);
-  gtk_frame_set_label_align ((GtkFrame *) labels[0][2], 0.5, 0.0);
+  renderer = gtk_cell_renderer_text_new ();
+  progress_renderer = gtk_cell_renderer_progress_new();
 
-  for (int i = 0; i < MAX_PROCESSES; i++)
-  {
-    labels[i + 1][0] = gtk_label_new ("");
-    labels[i + 1][1] = gtk_label_new ("");
-    labels[i + 1][2] = gtk_label_new ("");
-  }
+  column = gtk_tree_view_column_new_with_attributes ("Process Name",
+                                                     renderer,
+                                                     "text", PROCESS_NAME_COLUMN,
+                                                     NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (tree), column);
+
+  column = gtk_tree_view_column_new_with_attributes ("CPU Usage",
+                                                     progress_renderer,
+                                                     "value", CPU_USAGE_COLUMN,
+                                                     NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (tree), column);
+
+  column = gtk_tree_view_column_new_with_attributes ("Memory Usage",
+                                                     renderer,
+                                                     "text", MEMORY_USAGE_COLUMN,
+                                                     NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (tree), column);
+
+  gtk_container_add (GTK_CONTAINER (scwin), tree);
+
+  GtkWidget *action_bar = gtk_action_bar_new();
+  GtkWidget *button_box = gtk_vbox_new(TRUE, 100);
 
   kill_button = gtk_button_new_with_label("Kill");
-  gtk_grid_attach (GTK_GRID (table), kill_button, 0, 0, 1, 1);
+  gtk_widget_set_size_request (kill_button,200,40);
 
+  gtk_box_pack_start(button_box, kill_button, FALSE, FALSE, 0);
+  gtk_action_bar_pack_start (action_bar, button_box);
 
-  for (int row = 0; row < MAX_PROCESSES + 1; row++)
-  {
-    if (row != 0)
-    {
-      check_buttons[row] = gtk_check_button_new();
-      gtk_grid_attach (GTK_GRID (table), check_buttons[row], 0, row, 1, 1);
-    }
-    for (int column = 0; column < 3; column++)
-    {
-      gtk_grid_attach (GTK_GRID (table), labels[row][column], column + 1, row, 1, 1);
-    }
-  }
+  GtkWidget *box = gtk_vbox_new(FALSE, 0);
+  gtk_container_add (GTK_CONTAINER (window), box);
+
+  gtk_box_pack_start (box,
+                 action_bar, FALSE, FALSE, 0);
+
+  gtk_box_pack_start (box,
+                 scwin, TRUE, TRUE, 0);
+
+  /* Setup the selection handler */
+  GtkTreeSelection *select;
+
+  select = gtk_tree_view_get_selection (GTK_TREE_VIEW (tree));
+  gtk_tree_selection_set_mode (select, GTK_SELECTION_SINGLE);
+  g_signal_connect (G_OBJECT (select), "changed",
+                  G_CALLBACK (tree_selection_changed_cb),
+                  NULL);
 
   gtk_widget_show_all (window);
 
-  g_timeout_add(500, (GSourceFunc) update_utilization, NULL);
+  process_tree = build_process_tree(1, NULL);
+  update_utilization(NULL);
+  g_timeout_add(2000, (GSourceFunc) update_utilization, NULL);
 }
 
 int

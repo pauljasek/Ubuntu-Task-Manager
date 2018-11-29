@@ -1,13 +1,3 @@
-/*
-** syscall.c for lkm_syscall
-**
-** Originally made by xsyann
-** Contact <contact@xsyann.com>
-**
-** Current version built by Yuan Xiao
-** Contact <xiao.465@osu.edu>
-*/
-
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -26,22 +16,42 @@ MODULE_VERSION("0.1");
 #define SYS_CALL_TABLE "sys_call_table"
 #define SYSCALL_NI __NR_tuxcall
 
+#define MAX_PROCESSES 1000
+
 static ulong *syscall_table = NULL;
 
 static void *original_syscall = NULL;
 
 
-static int lkm_syscall(int * pid_list, char ** process_name_list)
+static int lkm_syscall(int * pid_list, pid_t parent_pid)
 {
-        struct task_struct *task;
+        struct task_struct *task, *tmp;
+	struct list_head *list;
 	int i = 0;
-	for_each_process(task) {
-		if (i < 1000) {
-			pid_list[i] = task->pid;
+	
+
+	if (parent_pid) {
+		task = pid_task(find_vpid(parent_pid), PIDTYPE_PID);
+		if (task == NULL) return 0;
+		list_for_each(list, &task->children) {
+		    tmp = list_entry(list, struct task_struct, sibling);
+		    /* tmp now points to one of current’s children */
+		    if (i < MAX_PROCESSES) {
+			pid_list[i] = tmp->pid;
+			i++;
+		    }
 		}
-		i++;
 	}
-        printk("%d\n", i);
+	else {
+		for_each_process(tmp){
+		    if (i < MAX_PROCESSES) {
+			if (tmp->parent->pid == 0) {
+				pid_list[i] = tmp->pid;
+				i++;
+			}
+		    }
+		}
+	}	
 	return i;
 }
 
