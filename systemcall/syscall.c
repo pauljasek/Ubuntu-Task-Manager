@@ -9,8 +9,8 @@
 #include <linux/string.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Yann KOETH");
-MODULE_DESCRIPTION("Loadable Kernel Module Syscall");
+MODULE_AUTHOR("Paul Jasek");
+MODULE_DESCRIPTION("Loadable Kernel Module For Accessing Process Tree");
 MODULE_VERSION("0.1");
 
 #define SYS_CALL_TABLE "sys_call_table"
@@ -115,6 +115,3 @@ static void cleanup_syscall(void)
 module_init(init_syscall);
 module_exit(cleanup_syscall);
 
-
-MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("A kernel module to list process by their names");

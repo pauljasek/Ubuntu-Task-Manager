@@ -1,6 +1,12 @@
+/*
+ * Ubuntu Task Manager
+ * CSE 2431: Operating Systems
+ * Authors: Paul Jasek and Anna Yu
+ * A simple graphic task manager for Ubuntu.
+ */
+
 #include <gtk/gtk.h>
 #include <gmodule.h>
-
 #include <sys/syscall.h>
 
 #include <linux/module.h>
@@ -14,11 +20,14 @@
 #include <signal.h>
 #include <math.h>
 
+#include "process_util.h"
 
 #define HIJACKED_SYSCALL __NR_tuxcall
-
 #define MAX_PROCESSES 1000
 
+/*
+ * Struct for storing process statistics.
+ */
 struct process {
   pid_t pid;
   long long previous_time;
@@ -31,123 +40,16 @@ struct process {
   GtkTreeIter iter;
 };
 
+
+/*
+ * Initialize global variables
+ */
 int pid_list[MAX_PROCESSES];
 GNode *process_tree;
-
-double get_total_cpu_jiffies()
-{
-  char dummy[10];
-  long long total_time = 0, temp;
-  FILE *fp = fopen("/proc/stat", "r");
-  if (!fp) return 3000000;
-
-  if (fscanf(fp, "%s", dummy) == EOF) {
-      fclose(fp);
-      return 3000000;
-  }
-  for (int i = 0; i < 10; i++) {
-    if (fscanf(fp, "%lld", &temp) == EOF) {
-      fclose(fp);
-      return 3000000;
-    }
-    total_time += temp;
-  }
-  fclose(fp);
-
-  return total_time;
-}
-
-long long get_process_cpu_jiffies(int pid) {
-  char filename[200];
-  char items[52][100];
-  long long utime, stime, cutime, cstime, starttime, total_time;
-
-  sprintf(filename, "/proc/%d/stat", pid);
-
-  FILE *fp = fopen(filename, "r");
-  if (!fp) return 1;
-  
-  for (int i = 0; i < 52; i++)
-  {
-    if (fscanf(fp, "%s", items[i]) == EOF) {
-      fclose(fp);
-      return 0;
-    };
-  }
-
-  fclose(fp);
-
-  utime = strtoll(items[13],NULL,10);
-  stime = strtoll(items[14],NULL,10);
-  cutime = strtoll(items[15],NULL,10);
-  cstime = strtoll(items[16],NULL,10);
-
-  return utime + cutime + stime + cstime;
-}
-
-long long get_process_memory_usage(int pid) {
-  char filename[200];
-  sprintf(filename, "/proc/%d/status", pid);
-  FILE *fp = fopen(filename, "r");
-  if (!fp) return 1;
-  char *line, *memory_usage_str;
-  size_t len = 1024;
-
-  line = malloc(len);
-  memory_usage_str = malloc(len);
-
-	
-  while (1)
-  {
-	if (getline(&line, &len, fp) == -1)
-	{
-		free(line);
-		fclose(fp);
-		return 1;
-	}
-	if (!strncmp(line, "VmSize:", 7))
-	{
-		strcpy(memory_usage_str, strdup(&line[8]));
-		strtok(memory_usage_str, " kB");
-		break;
-	}
-  }
-
-  long long memory_usage = atoll(memory_usage_str) * 1024;
-
-  free(line);
-  free(memory_usage_str);
-  fclose(fp);
-
-  return memory_usage;
-}
-
-char* MEM_SIZES[] = {"Bytes", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
-void format_memory(long long bytes, char *string) {
-  int i = log2(bytes)/log2(1024);
-  float decimal = 1.0 * bytes / pow(1024, i);
-  sprintf(string, "%.1f %s", decimal, MEM_SIZES[i]);
-}
-
-int get_process_name(int pid, char *name) {
-  char filename[100], path[1000] = {'\0'};
-  sprintf(filename, "/proc/%d/cmdline", pid);
-  FILE *fp = fopen(filename, "r");
-  if (!fp) return 1;
-  if (fscanf(fp, "%s", path) == EOF) {
-    fclose(fp);
-    return 1;
-  }
-  if (strlen(path) > 0) {
-    strcpy(name, basename(path));
-  }
-  fclose(fp);
-  return 0;
-}
-
 long long previous_total_time = 0;
 long long previous_time[MAX_PROCESSES];
 GtkTreeStore *store;
+pid_t selected_pid = 0;
 
 enum
 {
@@ -159,7 +61,11 @@ enum
    N_COLUMNS
 };
 
+/*
+ * Build the process tree starting at a given pid.
+ */
 GNode * build_process_tree(pid_t parent_pid, GtkTreeIter *parent_iter) {
+
   struct process *process_data;
   
   process_data = calloc(1, sizeof(struct process));
@@ -184,6 +90,9 @@ GNode * build_process_tree(pid_t parent_pid, GtkTreeIter *parent_iter) {
   return parent;
 }
 
+/*
+ * Updates the process tree without deleting and recreating it.
+ */
 void update_process_tree(GNode *tree) {
   struct process *tree_data = (struct process *) tree->data;
 
@@ -192,7 +101,6 @@ void update_process_tree(GNode *tree) {
   
   for (int c = children - 1, i = length - 1; c >= 0 || i >= 0;)
   {
-    //printf("%d/%d children %d/%d new\n", c, children, i, length);
     if (c < 0) {
       //create
       g_node_insert (tree, c + 1, build_process_tree(pid_list[i], &(tree_data->iter)));
@@ -221,6 +129,9 @@ void update_process_tree(GNode *tree) {
   }
 }
 
+/*
+ * Calculate the cpu usage of a given process in the process tree.
+ */
 gboolean update_cpu_utilization(GNode *node, gpointer total_time_ptr) {
     struct process *data;
     data = (struct process *) node->data;
@@ -244,6 +155,9 @@ gboolean update_cpu_utilization(GNode *node, gpointer total_time_ptr) {
     return 0;
 }
 
+/*
+ * Add child processes cpu usage to an ancestor process cumulative cpu usage.
+ */
 gboolean calculate_cum_cpu_utilization(GNode *node, gpointer sum) {
     struct process *data;
     data = (struct process *) node->data;
@@ -254,6 +168,9 @@ gboolean calculate_cum_cpu_utilization(GNode *node, gpointer sum) {
     return 0;
 }
 
+/*
+ * Calculate the cumulative cpu usage of a given process in the process tree.
+ */
 gboolean update_cum_cpu_utilization(GNode *node, gpointer info) {
     struct process *data;
     data = (struct process *) node->data;
@@ -270,6 +187,9 @@ gboolean update_cum_cpu_utilization(GNode *node, gpointer info) {
     return 0;
 }
 
+/*
+ * Update the memory usage of a process in the process tree.
+ */
 gboolean update_memory_utilization(GNode *node, gpointer info) {
   struct process *data;
   data = (struct process *) node->data;
@@ -278,6 +198,9 @@ gboolean update_memory_utilization(GNode *node, gpointer info) {
   return 0;
 }
 
+/*
+ * Add child processes memory usage to the cummulative memory usage of an ancestor process.
+ */
 gboolean calculate_cum_memory_utilization(GNode *node, gpointer sum) {
     struct process *data;
     data = (struct process *) node->data;
@@ -288,6 +211,9 @@ gboolean calculate_cum_memory_utilization(GNode *node, gpointer sum) {
     return 0;
 }
 
+/*
+ * Calculate the cumulative memory usage for a given process.
+ */
 gboolean update_cum_memory_utilization(GNode *node, gpointer info) {
     struct process *data;
     data = (struct process *) node->data;
@@ -306,6 +232,9 @@ gboolean update_cum_memory_utilization(GNode *node, gpointer info) {
     return 0;
 }
 
+/*
+ * Update the process name.
+ */
 gboolean update_process_name(GNode *node, gpointer info) {
   struct process *data;
   data = (struct process *) node->data;
@@ -314,6 +243,9 @@ gboolean update_process_name(GNode *node, gpointer info) {
   return 0;
 }
 
+/*
+ * Update the GUI with calculated information from the process tree.
+ */
 gboolean update_gtk_tree(GNode *node, gpointer info) {
   struct process *data;
   data = (struct process *) node->data;
@@ -330,22 +262,25 @@ gboolean update_gtk_tree(GNode *node, gpointer info) {
   return 0;
 }
 
-
+/*
+ * Updates all processes in the process tree and GTK treeview with calculated statistics. 
+ */
 gboolean update_utilization(GtkWidget * data)
 {
+  // Update the structure of the process tree.
   update_process_tree(process_tree);
 
+  // Calculate the CPU usage of each process in the tree.
   long long total_time = get_total_cpu_jiffies();
-
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
                  -1,
                  update_cpu_utilization,
                  &total_time);
-
   previous_total_time = total_time;
 
+  // Calculate the cumulative CPU usage of each process in the tree.
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
@@ -353,7 +288,7 @@ gboolean update_utilization(GtkWidget * data)
                  update_cum_cpu_utilization,
                  NULL);
 
-
+  // Calculate the memory usage of each process in the tree.
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
@@ -361,6 +296,7 @@ gboolean update_utilization(GtkWidget * data)
                  update_memory_utilization,
                  NULL);
 
+  // Calculate the cumulative memory usage of each process in the tree.
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
@@ -368,6 +304,7 @@ gboolean update_utilization(GtkWidget * data)
                  update_cum_memory_utilization,
                  NULL);
 
+  // Update the process name of each process in the tree.
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
@@ -375,7 +312,7 @@ gboolean update_utilization(GtkWidget * data)
                  update_process_name,
                  NULL);
 
-
+  // Update the values of the GTK TreeView.
   g_node_traverse (process_tree,
                  G_IN_ORDER,
                  G_TRAVERSE_ALL,
@@ -387,9 +324,11 @@ gboolean update_utilization(GtkWidget * data)
   return TRUE;
 }
 
-pid_t selected_pid = 0;
 
-/* Selection handler callback */
+
+/*
+ * Handles selection of a process within the GTK TreeView.
+ */
 static void
 tree_selection_changed_cb (GtkTreeSelection *selection, gpointer data)
 {
@@ -402,29 +341,61 @@ tree_selection_changed_cb (GtkTreeSelection *selection, gpointer data)
         }
 }
 
-/* Our usual callback function */
-void kill_button_callback( GtkWidget *widget, gpointer   data )
+/*
+ * Sends a SIGKILL signal to the selected process.
+ */
+void kill_button_callback( GtkWidget *widget, gpointer data )
+{
+  kill(selected_pid, SIGKILL);
+}
+
+/*
+ * Sends a SIGTERM signal to the selected process.
+ */
+void terminate_button_callback( GtkWidget *widget, gpointer data )
 {
   kill(selected_pid, SIGTERM);
 }
 
+/*
+ * Toggle sort to sort column by memory amount.
+ */
 void toggle_memory_sort(GtkWidget *widget, gpointer data)
 {
   gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE(store), MEMORY_USAGE_NUMBER_COLUMN, GTK_SORT_DESCENDING);
 }
 
+/*
+ * Toggle sort to sort column by cpu usage.
+ */
 void toggle_cpu_sort(GtkWidget *widget, gpointer data)
 {
   gtk_tree_sortable_set_sort_column_id (GTK_TREE_SORTABLE(store), CPU_USAGE_COLUMN, GTK_SORT_DESCENDING);
 }
 
-static void
-activate (GtkApplication *app,
-          gpointer        user_data)
-{
-  GtkWidget *window, *scwin;
-  GtkWidget *kill_button;
 
+/*
+ * Guild the GUI!
+ */
+static void activate (GtkApplication *app, gpointer user_data)
+{
+  
+  /*
+   * Create the window.
+   */
+  GtkWidget *window = gtk_application_window_new (app);
+  gtk_window_set_title (GTK_WINDOW (window), "Task Manager");
+  gtk_window_set_default_size (GTK_WINDOW (window), 600, 800);
+
+  /*
+   * Create the scrolling window.
+   */
+  GtkWidget *scwin = gtk_scrolled_window_new(NULL, NULL);
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scwin), GTK_POLICY_AUTOMATIC, GTK_POLICY_ALWAYS);
+
+  /*
+   * Create the TreeView.
+   */
   store = gtk_tree_store_new (N_COLUMNS,
 					    G_TYPE_INT,
                                             G_TYPE_STRING,
@@ -436,17 +407,11 @@ activate (GtkApplication *app,
   GtkTreeSortable *sortable = GTK_TREE_SORTABLE(store);
   gtk_tree_sortable_set_sort_column_id (sortable, CPU_USAGE_COLUMN, GTK_SORT_DESCENDING);
 
-  window = gtk_application_window_new (app);
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(window), GTK_POLICY_AUTOMATIC,
-                                 GTK_POLICY_ALWAYS);
-  gtk_window_set_title (GTK_WINDOW (window), "Task Manager");
-  gtk_window_set_default_size (GTK_WINDOW (window), 600, 800);
+  GtkWidget *tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
 
-  scwin = gtk_scrolled_window_new(NULL, NULL);
-
-  GtkWidget *tree;
-  tree = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
-
+  /*
+   * Set up column rendering
+   */
   GtkCellRenderer *renderer, *progress_renderer;
   GtkTreeViewColumn *name_column, *cpu_usage_column, *memory_usage_column;
 
@@ -471,33 +436,22 @@ activate (GtkApplication *app,
                                                      NULL);
   gtk_tree_view_append_column (GTK_TREE_VIEW (tree), memory_usage_column);
 
-  gtk_tree_view_set_headers_clickable(tree, TRUE);
+  /*
+   * Setup column sorting.
+   */
+  gtk_tree_view_set_headers_clickable((GtkTreeView *)tree, TRUE);
   g_signal_connect (G_OBJECT (cpu_usage_column), "clicked", G_CALLBACK (toggle_cpu_sort), NULL);
   g_signal_connect (G_OBJECT (memory_usage_column), "clicked", G_CALLBACK (toggle_memory_sort), NULL);
 
+  /*
+   * Add the tree to the scrolling window.
+   */
   gtk_container_add (GTK_CONTAINER (scwin), tree);
 
-  GtkWidget *action_bar = gtk_action_bar_new();
-  GtkWidget *button_box = gtk_vbox_new(TRUE, 100);
 
-  kill_button = gtk_button_new_with_label("End Task");
-
-  /* Connect the "clicked" signal of the button to our callback */
-  g_signal_connect (G_OBJECT (kill_button), "clicked",
-                        G_CALLBACK (kill_button_callback), NULL);
-
-  gtk_widget_set_size_request (kill_button,100,25);
-
-  gtk_box_pack_start((GtkBox *) button_box, kill_button, FALSE, FALSE, 0);
-  gtk_action_bar_pack_start ((GtkActionBar *) action_bar, button_box);
-
-  GtkWidget *box = gtk_vbox_new(FALSE, 0);
-  gtk_container_add (GTK_CONTAINER (window), box);
-
-  gtk_box_pack_start ((GtkBox *) box, scwin, TRUE, TRUE, 0);
-  gtk_box_pack_start ((GtkBox *) box, action_bar, FALSE, FALSE, 0);
-
-  /* Setup the selection handler */
+  /*
+   * Setup the selection handler for the TreeView.
+   */
   GtkTreeSelection *select;
 
   select = gtk_tree_view_get_selection (GTK_TREE_VIEW (tree));
@@ -506,25 +460,73 @@ activate (GtkApplication *app,
                   G_CALLBACK (tree_selection_changed_cb),
                   NULL);
 
-  gtk_widget_show_all (window);
+  /*
+   * Create the action bar with kill buttons.
+   */
+  GtkWidget *action_bar = gtk_action_bar_new();
 
+  GtkWidget *terminate_button = gtk_button_new_with_label("End Task");
+  GtkWidget *kill_button = gtk_button_new_with_label("Force Kill Task");
+
+
+  // place buttons within boxes to size properly.
+  GtkWidget *button_boxes[2] = {gtk_box_new(GTK_ORIENTATION_VERTICAL , 100), gtk_box_new(GTK_ORIENTATION_VERTICAL , 100)};
+  gtk_box_pack_start((GtkBox *) button_boxes[0], terminate_button, FALSE, FALSE, 0);
+  gtk_box_pack_start((GtkBox *) button_boxes[1], kill_button, FALSE, FALSE, 0);
+
+  gtk_widget_set_size_request (kill_button,100,25);
+  gtk_widget_set_size_request (terminate_button,100,25);
+
+  // add button boxes to the action bar
+  gtk_action_bar_pack_start ((GtkActionBar *) action_bar, button_boxes[0]);
+  gtk_action_bar_pack_start ((GtkActionBar *) action_bar, button_boxes[1]);
+
+  // place action bar and scrolling window within the application
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL , 0);
+  gtk_box_pack_start ((GtkBox *) box, scwin, TRUE, TRUE, 0);
+  gtk_box_pack_start ((GtkBox *) box, action_bar, FALSE, FALSE, 0);
+  gtk_container_add (GTK_CONTAINER (window), box);
+
+  /*
+   * Setup SIGKILL and SIGTERM callback functions for button clicks.
+   */
+  g_signal_connect (G_OBJECT (kill_button), "clicked",
+                        G_CALLBACK (kill_button_callback), NULL);
+
+  g_signal_connect (G_OBJECT (terminate_button), "clicked",
+                        G_CALLBACK (terminate_button_callback), NULL);
+
+
+  /*
+   * Setup the process tree.
+   */
   process_tree = build_process_tree(1, NULL);
   gtk_tree_view_expand_row (GTK_TREE_VIEW(tree),
-			    gtk_tree_model_get_path (store,
+			    gtk_tree_model_get_path ((GtkTreeModel *) store,
                             			     &(((struct process *) process_tree->data)->iter)),
                             FALSE);
   update_utilization(NULL);
+
+  /*
+   * Show the window.
+   */
+  gtk_widget_show_all (window);
+
+  /*
+   * Start timeout for updating statistics.
+   */
   g_timeout_add(2000, (GSourceFunc) update_utilization, NULL);
 }
 
-int
-main (int    argc,
-      char **argv)
+int main (int argc, char **argv)
 {
   GtkApplication *app;
   int status;
 
-  app = gtk_application_new ("student.pauljasek.taskmanager", G_APPLICATION_FLAGS_NONE);
+  /*
+   * Launch the GUI Application
+   */
+  app = gtk_application_new ("student.pauljasekandannayu.taskmanager", G_APPLICATION_FLAGS_NONE);
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
   status = g_application_run (G_APPLICATION (app), argc, argv);
   g_object_unref (app);
