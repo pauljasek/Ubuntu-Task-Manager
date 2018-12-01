@@ -9,16 +9,13 @@
 #include <gmodule.h>
 #include <sys/syscall.h>
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/unistd.h>
-#include <linux/sched.h>
-
 #include <unistd.h>
 #include <stdio.h>
 #include <libgen.h>
 #include <signal.h>
 #include <math.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include "process_util.h"
 
